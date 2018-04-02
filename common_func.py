@@ -8,10 +8,10 @@ import struct
 import collections
 import logging
 import socket
-import select
 import threading
 import traceback
 import functools
+import selectors
 
 try:
     # for pycharm type hinting
@@ -95,8 +95,12 @@ def select_recv(conn, buff_size, timeout=None):
     :type timeout: float
     :rtype: Union[bytes, None]
     """
-    rlist, _, _ = select.select([conn], [], [], timeout)
-    if not rlist:
+    sel = selectors.DefaultSelector()
+    sel.register(conn, selectors.EVENT_READ)
+    # rlist, _, _ = select.select([conn], [], [], timeout)
+    events = sel.select(timeout)
+    sel.close()
+    if not events:
         # timeout
         raise RuntimeError("recv timeout")
 
@@ -116,6 +120,8 @@ class SocketBridge:
         self.conn_rd = set()  # record readable-sockets
         self.map = {}  # record sockets pairs
         self.callbacks = {}  # record callbacks
+
+        self.sel = selectors.DefaultSelector()
 
     def add_conn_pair(self, conn1, conn2, callback=None):
         """
@@ -137,6 +143,9 @@ class SocketBridge:
         # record callback
         if callback is not None:
             self.callbacks[conn1] = callback
+
+        self.sel.register(conn1, selectors.EVENT_READ)
+        self.sel.register(conn2, selectors.EVENT_READ)
 
     def start_as_daemon(self):
         t = threading.Thread(target=self.start)
@@ -167,9 +176,11 @@ class SocketBridge:
             # blocks until there is socket(s) ready for .recv
             # notice: sockets which were closed by remote,
             #   are also regarded as read-ready by select()
-            r, w, e = select.select(self.conn_rd, [], [], 0.5)
+            events = self.sel.select(0.5)
+            # r, w, e = select.select(self.conn_rd, [], [], 0.5)
 
-            for s in r:  # iter every read-ready or closed sockets
+            for key, mask in events:  # type: selectors.SelectorKey, int
+                s = key.fileobj
                 try:
                     # here, we use .recv_into() instead of .recv()
                     #   recv data directly into the pre-allocated buffer
@@ -201,6 +212,7 @@ class SocketBridge:
         """
         if conn in self.conn_rd:
             self.conn_rd.remove(conn)
+            self.sel.unregister(conn)
 
         try:
             conn.shutdown(socket.SHUT_RD)
@@ -336,11 +348,11 @@ class CtrlPkg:
     # formats
     # see https://docs.python.org/3/library/struct.html#format-characters
     #   for format syntax
-    FORMAT_PKG = "!b b H 20x 40s"
+    FORMAT_PKG = b"!b b H 20x 40s"
     FORMATS_DATA = {
-        PTYPE_HS_S2M: "!I 36x",
-        PTYPE_HEART_BEAT: "!40x",
-        PTYPE_HS_M2S: "!I 36x",
+        PTYPE_HS_S2M: b"!I 36x",
+        PTYPE_HEART_BEAT: b"!40x",
+        PTYPE_HS_M2S: b"!I 36x",
     }
 
     _cache_prebuilt_pkg = {}  # cache
@@ -466,6 +478,7 @@ class CtrlPkg:
         try:
             pkg = cls.decode_only(raw)
         except:
+            log.error('unable to decode package. raw: %s', raw, exc_info=True)
             return None, False
         else:
             return pkg, pkg.verify(pkg_type=pkg_type)
