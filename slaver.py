@@ -7,6 +7,8 @@ from common_func import *
 __author__ = "Aploium <i@z.codes>"
 __website__ = "https://github.com/aploium/shootback"
 
+socks5_proxy_host='localhost'
+socks5_proxy_port=1088
 
 class Slaver:
     """
@@ -24,7 +26,13 @@ class Slaver:
         self.socket_bridge = SocketBridge()
 
     def _connect_master(self):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            import socks
+            xsocket = socks.socksocket
+        except ImportError:
+            xsocket = socket.socket
+        sock = xsocket(socket.AF_INET, socket.SOCK_STREAM)
+        if (socks5_proxy_host and hasattr(sock,'set_proxy')): sock.set_proxy(socks.SOCKS5,socks5_proxy_host,socks5_proxy_port)
         sock.connect(self.communicate_addr)
 
         self.spare_slaver_pool[sock.getsockname()] = {
